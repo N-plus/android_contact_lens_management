@@ -607,6 +607,13 @@ class ContactProfile {
   DateTime _dateOnly(DateTime date) => DateTime(date.year, date.month, date.day);
 }
 
+enum SubscriptionStatus {
+  notPurchased,
+  trial,
+  active,
+  expired,
+}
+
 class ContactLensState extends ChangeNotifier {
   ContactLensState();
 
@@ -631,12 +638,9 @@ class ContactLensState extends ChangeNotifier {
   static const _soundEnabledKey = 'soundEnabled';
   static const _showSecondProfileKey = 'showSecondProfile';
   static const _isPremiumKey = 'isPremium';
-  static const premiumMonthlyProductId = 'premium_monthly_300';
-  static const premiumYearlyProductId = 'premium_yearly_2500';
-  static const Set<String> premiumProductIds = {
-    premiumMonthlyProductId,
-    premiumYearlyProductId,
-  };
+  static const _hasHadPremiumKey = 'hasHadPremium';
+  static const premiumMonthlyProductId = 'premium_monthly';
+  static const Set<String> premiumProductIds = {premiumMonthlyProductId};
 
   static const _lensTypeKey = 'lensType';
   static const int oneDayCycle = 1;
@@ -668,7 +672,9 @@ class ContactLensState extends ChangeNotifier {
   bool _inventoryOnboardingDismissed = false;
   bool _initialOnboardingDismissed = false;
   bool _showSecondProfile = true;
-  bool _isPremium = false;
+  bool _isPremiumUser = false;
+  bool _hasHadPremium = false;
+  SubscriptionStatus _subscriptionStatus = SubscriptionStatus.notPurchased;
   List<ProductDetails> _availableProducts = [];
   String? _productLoadError;
   final InAppPurchase _inAppPurchase = InAppPurchase.instance;
@@ -676,7 +682,15 @@ class ContactLensState extends ChangeNotifier {
 
   Future<void> load() async {
     _prefs = await SharedPreferences.getInstance();
-    _isPremium = _prefs?.getBool(_isPremiumKey) ?? false;
+    _isPremiumUser = _prefs?.getBool(_isPremiumKey) ?? false;
+    _hasHadPremium = _prefs?.getBool(_hasHadPremiumKey) ?? false;
+    _subscriptionStatus = _isPremiumUser
+        ? (_hasHadPremium
+            ? SubscriptionStatus.active
+            : SubscriptionStatus.trial)
+        : (_hasHadPremium
+            ? SubscriptionStatus.expired
+            : SubscriptionStatus.notPurchased);
     _purchaseSubscription = _inAppPurchase.purchaseStream.listen(
       _onPurchaseUpdated,
       onDone: () => _purchaseSubscription?.cancel(),
@@ -704,6 +718,7 @@ class ContactLensState extends ChangeNotifier {
 
     _autoAdvanceAll();
     await queryProducts();
+    await refreshSubscriptionStatus();
     await _applyPremiumRestrictions();
     await _persist();
     await _rescheduleNotifications();
@@ -715,7 +730,9 @@ class ContactLensState extends ChangeNotifier {
   int get selectedProfileIndex => _selectedProfileIndex;
   bool get hasSecondProfile => _profiles[1].isRegistered;
   bool get showSecondProfile => _showSecondProfile;
-  bool get isPremium => _isPremium;
+  bool get isPremiumUser => _isPremiumUser;
+  bool get isPremium => _isPremiumUser;
+  SubscriptionStatus get subscriptionStatus => _subscriptionStatus;
   List<ProductDetails> get availableProducts => List.unmodifiable(_availableProducts);
   String? get productLoadError => _productLoadError;
   String get currentProfileName => _profile.name;
@@ -999,11 +1016,55 @@ class ContactLensState extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> refreshSubscriptionStatus() async {
+    if (!await _inAppPurchase.isAvailable()) {
+      await _updateSubscriptionStatus(
+        _hasHadPremium ? SubscriptionStatus.expired : SubscriptionStatus.notPurchased,
+      );
+      return;
+    }
+
+    try {
+      final response = await _inAppPurchase.queryPastPurchases();
+      var status = _hasHadPremium
+          ? SubscriptionStatus.expired
+          : SubscriptionStatus.notPurchased;
+
+      for (final purchase in response.pastPurchases) {
+        if (!premiumProductIds.contains(purchase.productID)) {
+          continue;
+        }
+
+        if (purchase.status == PurchaseStatus.purchased ||
+            purchase.status == PurchaseStatus.restored) {
+          status = _hasHadPremium
+              ? SubscriptionStatus.active
+              : SubscriptionStatus.trial;
+          _hasHadPremium = true;
+          await _persistPremiumFlags();
+
+          if (purchase.pendingCompletePurchase) {
+            await _inAppPurchase.completePurchase(purchase);
+          }
+          break;
+        }
+      }
+
+      await _updateSubscriptionStatus(status);
+    } catch (e) {
+      debugPrint('Failed to refresh subscription status: $e');
+      await _updateSubscriptionStatus(
+        _hasHadPremium ? SubscriptionStatus.expired : SubscriptionStatus.notPurchased,
+      );
+    }
+  }
+
   Future<void> restorePurchases() async {
     if (!await _inAppPurchase.isAvailable()) {
       return;
     }
     await _inAppPurchase.restorePurchases();
+    await refreshSubscriptionStatus();
   }
 
   Future<void> _restorePurchases() async {
@@ -1018,21 +1079,36 @@ class ContactLensState extends ChangeNotifier {
     }
   }
 
-  Future<void> setPremium(bool value) => _setPremium(value);
+  Future<void> _persistPremiumFlags() async {
+    await _prefs?.setBool(_isPremiumKey, _isPremiumUser);
+    await _prefs?.setBool(_hasHadPremiumKey, _hasHadPremium);
+  }
 
-  Future<void> _setPremium(bool value) async {
-    if (_isPremium == value) return;
-    _isPremium = value;
-    await _prefs?.setBool(_isPremiumKey, _isPremium);
+  Future<void> _updateSubscriptionStatus(SubscriptionStatus status) async {
+    _subscriptionStatus = status;
+    _isPremiumUser =
+        status == SubscriptionStatus.trial || status == SubscriptionStatus.active;
+    await _persistPremiumFlags();
     notifyListeners();
   }
 
   void _onPurchaseUpdated(List<PurchaseDetails> detailsList) {
     for (final purchase in detailsList) {
-      if (premiumProductIds.contains(purchase.productID) &&
-          (purchase.status == PurchaseStatus.purchased ||
-              purchase.status == PurchaseStatus.restored)) {
-        unawaited(setPremium(true));
+      if (premiumProductIds.contains(purchase.productID)) {
+        if (purchase.status == PurchaseStatus.purchased ||
+            purchase.status == PurchaseStatus.restored) {
+          final nextStatus =
+              _hasHadPremium ? SubscriptionStatus.active : SubscriptionStatus.trial;
+          _hasHadPremium = true;
+          unawaited(_persistPremiumFlags());
+          unawaited(_updateSubscriptionStatus(nextStatus));
+        } else if (purchase.status == PurchaseStatus.canceled ||
+            purchase.status == PurchaseStatus.error) {
+          final fallbackStatus = _hasHadPremium
+              ? SubscriptionStatus.expired
+              : SubscriptionStatus.notPurchased;
+          unawaited(_updateSubscriptionStatus(fallbackStatus));
+        }
       }
       if (purchase.pendingCompletePurchase) {
         _inAppPurchase.completePurchase(purchase);
@@ -1123,7 +1199,7 @@ class ContactLensState extends ChangeNotifier {
   }
 
   Future<void> _applyPremiumRestrictions() async {
-    if (_isPremium) return;
+    if (_isPremiumUser) return;
     var updated = false;
     for (var i = 0; i < _profiles.length; i++) {
       if (_profiles[i].autoSchedule) {
@@ -1153,7 +1229,7 @@ class ContactLensState extends ChangeNotifier {
       _initialOnboardingDismissed,
     );
     await _prefs?.setBool(_showSecondProfileKey, _showSecondProfile);
-    await _prefs?.setBool(_isPremiumKey, _isPremium);
+    await _persistPremiumFlags();
   }
 
   DateTime _today() {
@@ -3160,8 +3236,6 @@ class _PaywallPageState extends State<PaywallPage> {
         final themeColor = state.themeColor;
         final monthlyProduct =
             state.productForId(ContactLensState.premiumMonthlyProductId);
-        final yearlyProduct =
-            state.productForId(ContactLensState.premiumYearlyProductId);
         return Scaffold(
           appBar: AppBar(
             title: const Text('Premium'),
@@ -3238,26 +3312,13 @@ class _PaywallPageState extends State<PaywallPage> {
                     color: themeColor,
                   ),
                   const SizedBox(height: 24),
-                  if (monthlyProduct != null || yearlyProduct != null) ...[
-                    if (monthlyProduct != null)
-                      _PriceBox(
-                        themeColor: themeColor,
-                        title: '月額プラン',
-                        price: monthlyProduct.price,
-                        details: const [],
-                      ),
-                    if (monthlyProduct != null && yearlyProduct != null)
-                      const SizedBox(height: 12),
-                    if (yearlyProduct != null)
-                      _PriceBox(
-                        themeColor: themeColor,
-                        title: '年額プラン',
-                        price: yearlyProduct.price,
-                        details: const [
-                          '月あたり 約210円',
-                          '月額プランより約30%お得',
-                        ],
-                      ),
+                  if (monthlyProduct != null) ...[
+                    _PriceBox(
+                      themeColor: themeColor,
+                      title: '月額プラン',
+                      price: monthlyProduct.price,
+                      details: const [],
+                    ),
                     const SizedBox(height: 16),
                   ],
                   if (_isLoading) ...[
@@ -3280,20 +3341,7 @@ class _PaywallPageState extends State<PaywallPage> {
                       onPressed: () => _handlePurchase(monthlyProduct),
                       child: const Text('2週間無料で試す（月額プラン）'),
                     ),
-                  if (monthlyProduct != null && yearlyProduct != null)
-                    const SizedBox(height: 8),
-                  if (yearlyProduct != null)
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: themeColor.withOpacity(0.9),
-                        foregroundColor: Colors.white,
-                        minimumSize: const Size.fromHeight(48),
-                      ),
-                      onPressed: () => _handlePurchase(yearlyProduct),
-                      child: const Text('2週間無料で試す（年額プラン）'),
-                    ),
-                  if (monthlyProduct != null || yearlyProduct != null)
-                    const SizedBox(height: 8),
+                  if (monthlyProduct != null) const SizedBox(height: 8),
                   OutlinedButton(
                     style: OutlinedButton.styleFrom(
                       minimumSize: const Size.fromHeight(48),
