@@ -1017,46 +1017,7 @@ class ContactLensState extends ChangeNotifier {
   }
 
   Future<void> refreshSubscriptionStatus() async {
-    if (!await _inAppPurchase.isAvailable()) {
-      await _updateSubscriptionStatus(
-        _hasHadPremium ? SubscriptionStatus.expired : SubscriptionStatus.notPurchased,
-      );
-      return;
-    }
-
-    try {
-      final response = await InAppPurchase.instance.restorePurchases();
-      var status = _hasHadPremium
-          ? SubscriptionStatus.expired
-          : SubscriptionStatus.notPurchased;
-
-      for (final purchase in response.pastPurchases) {
-        if (!premiumProductIds.contains(purchase.productID)) {
-          continue;
-        }
-
-        if (purchase.status == PurchaseStatus.purchased ||
-            purchase.status == PurchaseStatus.restored) {
-          status = _hasHadPremium
-              ? SubscriptionStatus.active
-              : SubscriptionStatus.trial;
-          _hasHadPremium = true;
-          await _persistPremiumFlags();
-
-          if (purchase.pendingCompletePurchase) {
-            await _inAppPurchase.completePurchase(purchase);
-          }
-          break;
-        }
-      }
-
-      await _updateSubscriptionStatus(status);
-    } catch (e) {
-      debugPrint('Failed to refresh subscription status: $e');
-      await _updateSubscriptionStatus(
-        _hasHadPremium ? SubscriptionStatus.expired : SubscriptionStatus.notPurchased,
-      );
-    }
+    await restorePurchases();
   }
 
   Future<void> restorePurchases() async {
@@ -1064,7 +1025,6 @@ class ContactLensState extends ChangeNotifier {
       return;
     }
     await _inAppPurchase.restorePurchases();
-    await refreshSubscriptionStatus();
   }
 
   Future<void> _restorePurchases() async {
