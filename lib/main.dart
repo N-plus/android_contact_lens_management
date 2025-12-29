@@ -1025,7 +1025,7 @@ class ContactLensState extends ChangeNotifier {
     }
 
     try {
-      final response = await _inAppPurchase.queryPastPurchases();
+      final response = await InAppPurchase.instance.restorePurchases();
       var status = _hasHadPremium
           ? SubscriptionStatus.expired
           : SubscriptionStatus.notPurchased;
