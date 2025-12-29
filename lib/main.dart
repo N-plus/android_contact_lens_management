@@ -3299,7 +3299,7 @@ class _PaywallPageState extends State<PaywallPage> {
                         minimumSize: const Size.fromHeight(48),
                       ),
                       onPressed: () => _handlePurchase(monthlyProduct),
-                      child: const Text('2週間無料で試す（月額プラン）'),
+                      child: const Text('2週間無料で試す（月額プラン300円）'),
                     ),
                   if (monthlyProduct != null) const SizedBox(height: 8),
                   OutlinedButton(
