@@ -2,93 +2,106 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:audioplayers/audioplayers.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 
-final FlutterLocalNotificationsPlugin _notificationsPlugin =
-    FlutterLocalNotificationsPlugin();
+import 'app_initializer.dart';
+import 'ui/bootstrap_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await _initializeNotifications();
-
-  final state = ContactLensState();
-  await state.load();
-
-  runApp(
-    ChangeNotifierProvider<ContactLensState>.value(
-      value: state,
-      child: const MyApp(),
-    ),
-  );
+  runApp(const _BootstrapApp());
 }
 
-Future<void> _initializeNotifications() async {
-  const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
-  const iosSettings = DarwinInitializationSettings(
-    requestAlertPermission: true,
-    requestBadgePermission: true,
-    requestSoundPermission: true,
-  );
+class _BootstrapApp extends StatefulWidget {
+  const _BootstrapApp();
 
-  const initializationSettings = InitializationSettings(
-    android: androidSettings,
-    iOS: iosSettings,
-  );
-
-  await _notificationsPlugin.initialize(initializationSettings);
-
-  tz.initializeTimeZones();
-  tz.setLocalLocation(tz.getLocation('Asia/Tokyo'));
+  @override
+  State<_BootstrapApp> createState() => _BootstrapAppState();
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class _BootstrapAppState extends State<_BootstrapApp> {
+  final ContactLensState _state = ContactLensState();
+  final AppInitializer _initializer = AppInitializer();
+
+  bool _isBootstrapped = false;
+  Object? _bootstrapError;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
+  }
+
+  Future<void> _bootstrap() async {
+    try {
+      await _initializer.initialize();
+      _state.startListeningPurchaseUpdates();
+      await _state.load();
+    } catch (error) {
+      _bootstrapError = error;
+    } finally {
+      if (mounted) {
+        setState(() => _isBootstrapped = true);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _state.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<ContactLensState>(
-      builder: (context, state, _) {
-        return MaterialApp(
-          title: 'コンタクト交換管理',
-          locale: const Locale('ja', 'JP'),
-          theme: ThemeData(
-            colorScheme: ColorScheme.fromSeed(
-              seedColor: state.themeColor,
-              brightness: Brightness.light,
-            ),
-            appBarTheme: const AppBarTheme(
-              foregroundColor: Colors.white,
-              titleTextStyle: TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.w600,
+    return ChangeNotifierProvider<ContactLensState>.value(
+      value: _state,
+      child: Consumer<ContactLensState>(
+        builder: (context, state, _) {
+          return MaterialApp(
+            title: 'コンタクト交換管理',
+            locale: const Locale('ja', 'JP'),
+            theme: ThemeData(
+              colorScheme: ColorScheme.fromSeed(
+                seedColor: state.themeColor,
+                brightness: Brightness.light,
               ),
-              iconTheme: IconThemeData(color: Colors.white),
-              actionsIconTheme: IconThemeData(color: Colors.white),
+              appBarTheme: const AppBarTheme(
+                foregroundColor: Colors.white,
+                titleTextStyle: TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w600,
+                ),
+                iconTheme: IconThemeData(color: Colors.white),
+                actionsIconTheme: IconThemeData(color: Colors.white),
+              ),
+              useMaterial3: true,
             ),
-            useMaterial3: true,
-          ),
-          localizationsDelegates: const [
-            GlobalMaterialLocalizations.delegate,
-            GlobalWidgetsLocalizations.delegate,
-            GlobalCupertinoLocalizations.delegate,
-          ],
-          supportedLocales: const [
-            Locale('ja', 'JP'),
-            Locale('en', 'US'),
-          ],
-          home: const RootScreen(),
-        );
-      },
+            localizationsDelegates: const [
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            supportedLocales: const [
+              Locale('ja', 'JP'),
+              Locale('en', 'US'),
+            ],
+            home: BootstrapPage(
+              isReady: _isBootstrapped && state.isInitialized,
+              error: _bootstrapError,
+              readyChild: const RootScreen(),
+            ),
+          );
+        },
+      ),
     );
   }
 }
@@ -679,52 +692,72 @@ class ContactLensState extends ChangeNotifier {
   String? _productLoadError;
   final InAppPurchase _inAppPurchase = InAppPurchase.instance;
   StreamSubscription<List<PurchaseDetails>>? _purchaseSubscription;
+  bool _isInitialized = false;
+  bool _isLoading = false;
 
   Future<void> load() async {
-    _prefs = await SharedPreferences.getInstance();
-    _isPremiumUser = _prefs?.getBool(_isPremiumKey) ?? false;
-    _hasHadPremium = _prefs?.getBool(_hasHadPremiumKey) ?? false;
-    _subscriptionStatus = _isPremiumUser
-        ? (_hasHadPremium
-            ? SubscriptionStatus.active
-            : SubscriptionStatus.trial)
-        : (_hasHadPremium
-            ? SubscriptionStatus.expired
-            : SubscriptionStatus.notPurchased);
-    _purchaseSubscription = _inAppPurchase.purchaseStream.listen(
+    if (_isLoading || _isInitialized) {
+      return;
+    }
+    _isLoading = true;
+    notifyListeners();
+
+    try {
+      _prefs = await SharedPreferences.getInstance();
+      _isPremiumUser = _prefs?.getBool(_isPremiumKey) ?? false;
+      _hasHadPremium = _prefs?.getBool(_hasHadPremiumKey) ?? false;
+      _subscriptionStatus = _isPremiumUser
+          ? (_hasHadPremium
+              ? SubscriptionStatus.active
+              : SubscriptionStatus.trial)
+          : (_hasHadPremium
+              ? SubscriptionStatus.expired
+              : SubscriptionStatus.notPurchased);
+
+      _selectedProfileIndex = _prefs?.getInt(_selectedProfileIndexKey) ?? 0;
+      _inventoryOnboardingDismissed =
+          _prefs?.getBool(_inventoryOnboardingDismissedKey) ?? false;
+      _initialOnboardingDismissed =
+          _prefs?.getBool(_initialOnboardingDismissedKey) ?? false;
+      _showSecondProfile = _prefs?.getBool(_showSecondProfileKey) ?? true;
+
+      final storedPrimary = await _loadProfile(0);
+      final storedSecondary = await _loadProfile(1);
+
+      _profiles[0] = storedPrimary ?? await _loadLegacyProfile();
+      _profiles[1] = storedSecondary ?? ContactProfile.secondaryPlaceholder();
+
+      if (!_profiles[1].isRegistered) {
+        _selectedProfileIndex = 0;
+      } else if (!_showSecondProfile) {
+        _selectedProfileIndex = 0;
+      }
+      _selectedProfileIndex =
+          _selectedProfileIndex.clamp(0, _profiles.length - 1).toInt();
+
+      _autoAdvanceAll();
+      await queryProducts();
+      await refreshSubscriptionStatus();
+      await _applyPremiumRestrictions();
+      await _persist();
+      await _rescheduleNotifications();
+      unawaited(_restorePurchases());
+
+      _isInitialized = true;
+      notifyListeners();
+    } finally {
+      _isLoading = false;
+    }
+  }
+
+  void startListeningPurchaseUpdates() {
+    _purchaseSubscription ??= _inAppPurchase.purchaseStream.listen(
       _onPurchaseUpdated,
       onDone: () => _purchaseSubscription?.cancel(),
     );
-    _selectedProfileIndex = _prefs?.getInt(_selectedProfileIndexKey) ?? 0;
-    _inventoryOnboardingDismissed =
-        _prefs?.getBool(_inventoryOnboardingDismissedKey) ?? false;
-    _initialOnboardingDismissed =
-        _prefs?.getBool(_initialOnboardingDismissedKey) ?? false;
-    _showSecondProfile = _prefs?.getBool(_showSecondProfileKey) ?? true;
-
-    final storedPrimary = await _loadProfile(0);
-    final storedSecondary = await _loadProfile(1);
-
-    _profiles[0] = storedPrimary ?? await _loadLegacyProfile();
-    _profiles[1] = storedSecondary ?? ContactProfile.secondaryPlaceholder();
-
-    if (!_profiles[1].isRegistered) {
-      _selectedProfileIndex = 0;
-    } else if (!_showSecondProfile) {
-      _selectedProfileIndex = 0;
-    }
-    _selectedProfileIndex =
-        _selectedProfileIndex.clamp(0, _profiles.length - 1).toInt();
-
-    _autoAdvanceAll();
-    await queryProducts();
-    await refreshSubscriptionStatus();
-    await _applyPremiumRestrictions();
-    await _persist();
-    await _rescheduleNotifications();
-    unawaited(_restorePurchases());
-    notifyListeners();
   }
+
+  bool get isInitialized => _isInitialized;
 
   ContactProfile get _profile => _profiles[_selectedProfileIndex];
   int get selectedProfileIndex => _selectedProfileIndex;
@@ -1200,9 +1233,9 @@ class ContactLensState extends ChangeNotifier {
   DateTime _dateOnly(DateTime date) => DateTime(date.year, date.month, date.day);
 
   Future<void> _rescheduleNotifications() async {
-    await _notificationsPlugin.cancel(_dayBeforeNotificationId);
-    await _notificationsPlugin.cancel(_dayOfNotificationId);
-    await _notificationsPlugin.cancel(_inventoryAlertNotificationId);
+    await AppInitializer.notificationsPlugin.cancel(_dayBeforeNotificationId);
+    await AppInitializer.notificationsPlugin.cancel(_dayOfNotificationId);
+    await AppInitializer.notificationsPlugin.cancel(_inventoryAlertNotificationId);
 
     final exchange = exchangeDate;
     final now = tz.TZDateTime.now(tz.local);
@@ -1217,7 +1250,7 @@ class ContactLensState extends ChangeNotifier {
       );
 
       if (scheduled.isAfter(now)) {
-        await _notificationsPlugin.zonedSchedule(
+        await AppInitializer.notificationsPlugin.zonedSchedule(
           _inventoryAlertNotificationId,
           '在庫アラート',
           '在庫がお知らせ基準以下です。交換まであと3日です',
@@ -1248,7 +1281,7 @@ class ContactLensState extends ChangeNotifier {
         _profile.notifyDayBeforeTime,
       );
       if (scheduled.isAfter(now)) {
-        await _notificationsPlugin.zonedSchedule(
+        await AppInitializer.notificationsPlugin.zonedSchedule(
           _dayBeforeNotificationId,
           '$contactLabel交換の予定があります',
           '明日は$contactLabelの交換日です。忘れずにご準備ください。',
@@ -1274,7 +1307,7 @@ class ContactLensState extends ChangeNotifier {
     if (_profile.notifyDayOf) {
       final scheduled = _scheduledDateTime(exchange, _profile.notifyDayOfTime);
       if (scheduled.isAfter(now)) {
-        await _notificationsPlugin.zonedSchedule(
+        await AppInitializer.notificationsPlugin.zonedSchedule(
           _dayOfNotificationId,
           '今日は${contactLabel}交換日です',
           '新しい$contactLabelに交換しましょう。',
