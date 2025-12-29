@@ -107,4 +107,4 @@ flutter:
 flutter_launcher_icons:
   image_path: assets/app_icon_1024.png
   ios: true
-  android: false
+  android: true
