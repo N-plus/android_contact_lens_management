@@ -20,7 +20,8 @@ bool _notificationsInitialized = false;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await _initializeNotifications();
+  // TODO: 通知のクラッシュ原因が判明したら初期化を元に戻す
+  // await _initializeNotifications();
 
   final state = ContactLensState();
   await state.load();
@@ -34,28 +35,8 @@ Future<void> main() async {
 }
 
 Future<void> _initializeNotifications() async {
-  const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
-  const iosSettings = DarwinInitializationSettings(
-    requestAlertPermission: true,
-    requestBadgePermission: true,
-    requestSoundPermission: true,
-  );
-
-  const initializationSettings = InitializationSettings(
-    android: androidSettings,
-    iOS: iosSettings,
-  );
-
-  final initResult =
-      await _notificationsPlugin.initialize(initializationSettings) ?? false;
-
-  if (!initResult) {
-    return;
-  }
-
-  tz.initializeTimeZones();
-  tz.setLocalLocation(tz.getLocation('Asia/Tokyo'));
-  _notificationsInitialized = true;
+  // TODO: 通知を再有効化する際に初期化処理を復元する
+  _notificationsInitialized = false;
 }
 
 class MyApp extends StatelessWidget {
@@ -729,7 +710,8 @@ class ContactLensState extends ChangeNotifier {
     await refreshSubscriptionStatus();
     await _applyPremiumRestrictions();
     await _persist();
-    await _rescheduleNotifications();
+    // TODO: 通知再開時にスケジュール処理も戻す
+    // await _rescheduleNotifications();
     unawaited(_restorePurchases());
     notifyListeners();
   }
@@ -1211,6 +1193,7 @@ class ContactLensState extends ChangeNotifier {
     int notificationId,
     String description,
   ) async {
+    // TODO: 通知キャンセル処理を再度有効化する
     if (!_notificationsInitialized) {
       return;
     }
@@ -1223,6 +1206,8 @@ class ContactLensState extends ChangeNotifier {
   }
 
   Future<void> _rescheduleNotifications() async {
+    // TODO: 通知のスケジュール処理を復活させる
+    return;
     if (!_notificationsInitialized) {
       return;
     }
