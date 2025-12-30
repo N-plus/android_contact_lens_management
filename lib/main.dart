@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:audioplayers/audioplayers.dart';
@@ -1200,9 +1201,23 @@ class ContactLensState extends ChangeNotifier {
   DateTime _dateOnly(DateTime date) => DateTime(date.year, date.month, date.day);
 
   Future<void> _rescheduleNotifications() async {
-    await _notificationsPlugin.cancel(_dayBeforeNotificationId);
-    await _notificationsPlugin.cancel(_dayOfNotificationId);
-    await _notificationsPlugin.cancel(_inventoryAlertNotificationId);
+    try {
+      await _notificationsPlugin.cancel(_dayBeforeNotificationId);
+    } on PlatformException catch (e) {
+      debugPrint('Failed to cancel day-before notification: $e');
+    }
+
+    try {
+      await _notificationsPlugin.cancel(_dayOfNotificationId);
+    } on PlatformException catch (e) {
+      debugPrint('Failed to cancel day-of notification: $e');
+    }
+
+    try {
+      await _notificationsPlugin.cancel(_inventoryAlertNotificationId);
+    } on PlatformException catch (e) {
+      debugPrint('Failed to cancel inventory alert notification: $e');
+    }
 
     final exchange = exchangeDate;
     final now = tz.TZDateTime.now(tz.local);
