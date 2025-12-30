@@ -46,7 +46,12 @@ Future<void> _initializeNotifications() async {
     iOS: iosSettings,
   );
 
-  await _notificationsPlugin.initialize(initializationSettings);
+  final initResult =
+      await _notificationsPlugin.initialize(initializationSettings) ?? false;
+
+  if (!initResult) {
+    return;
+  }
 
   tz.initializeTimeZones();
   tz.setLocalLocation(tz.getLocation('Asia/Tokyo'));
