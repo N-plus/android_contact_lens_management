@@ -16,6 +16,7 @@ import 'package:timezone/timezone.dart' as tz;
 
 final FlutterLocalNotificationsPlugin _notificationsPlugin =
     FlutterLocalNotificationsPlugin();
+bool _notificationsInitialized = false;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -49,6 +50,7 @@ Future<void> _initializeNotifications() async {
 
   tz.initializeTimeZones();
   tz.setLocalLocation(tz.getLocation('Asia/Tokyo'));
+  _notificationsInitialized = true;
 }
 
 class MyApp extends StatelessWidget {
@@ -1200,32 +1202,35 @@ class ContactLensState extends ChangeNotifier {
 
   DateTime _dateOnly(DateTime date) => DateTime(date.year, date.month, date.day);
 
+  Future<void> _cancelNotificationIfNeeded(
+    int notificationId,
+    String description,
+  ) async {
+    if (!_notificationsInitialized) {
+      return;
+    }
+
+    try {
+      await _notificationsPlugin.cancel(notificationId);
+    } on PlatformException catch (e) {
+      debugPrint('Failed to cancel $description notification: $e');
+    }
+  }
+
   Future<void> _rescheduleNotifications() async {
-    try {
-      await _notificationsPlugin.cancel(_dayBeforeNotificationId);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to cancel day-before notification: $e');
-    }
-
-    try {
-      await _notificationsPlugin.cancel(_dayOfNotificationId);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to cancel day-of notification: $e');
-    }
-
-    try {
-      await _notificationsPlugin.cancel(_inventoryAlertNotificationId);
-    } on PlatformException catch (e) {
-      debugPrint('Failed to cancel inventory alert notification: $e');
+    if (!_notificationsInitialized) {
+      return;
     }
 
     final exchange = exchangeDate;
     final now = tz.TZDateTime.now(tz.local);
 
-    if (_profile.inventoryAlertEnabled &&
+    final shouldShowInventoryAlert = _profile.inventoryAlertEnabled &&
         _profile.showInventory &&
         _profile.inventoryCount != null &&
-        _profile.inventoryCount! <= _profile.inventoryThreshold) {
+        _profile.inventoryCount! <= _profile.inventoryThreshold;
+
+    if (shouldShowInventoryAlert) {
       final scheduled = _scheduledDateTime(
         exchange.subtract(const Duration(days: 3)),
         _profile.inventoryAlertTime,
@@ -1252,7 +1257,17 @@ class ContactLensState extends ChangeNotifier {
               UILocalNotificationDateInterpretation.absoluteTime,
           matchDateTimeComponents: DateTimeComponents.dateAndTime,
         );
+      } else {
+        await _cancelNotificationIfNeeded(
+          _inventoryAlertNotificationId,
+          'inventory alert',
+        );
       }
+    } else {
+      await _cancelNotificationIfNeeded(
+        _inventoryAlertNotificationId,
+        'inventory alert',
+      );
     }
 
     final contactLabel = _profiles[1].isRegistered ? _profile.name : 'コンタクト';
@@ -1283,7 +1298,17 @@ class ContactLensState extends ChangeNotifier {
               UILocalNotificationDateInterpretation.absoluteTime,
           matchDateTimeComponents: DateTimeComponents.dateAndTime,
         );
+      } else {
+        await _cancelNotificationIfNeeded(
+          _dayBeforeNotificationId,
+          'day-before',
+        );
       }
+    } else {
+      await _cancelNotificationIfNeeded(
+        _dayBeforeNotificationId,
+        'day-before',
+      );
     }
 
     if (_profile.notifyDayOf) {
@@ -1309,7 +1334,17 @@ class ContactLensState extends ChangeNotifier {
               UILocalNotificationDateInterpretation.absoluteTime,
           matchDateTimeComponents: DateTimeComponents.dateAndTime,
         );
+      } else {
+        await _cancelNotificationIfNeeded(
+          _dayOfNotificationId,
+          'day-of',
+        );
       }
+    } else {
+      await _cancelNotificationIfNeeded(
+        _dayOfNotificationId,
+        'day-of',
+      );
     }
   }
 
